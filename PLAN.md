@@ -111,7 +111,8 @@ fantasy_baseball_sleeper_finder/
 │   │   │   ├── sleeper_model.py      # Sleeper detection
 │   │   │   ├── bust_model.py         # Bust detection
 │   │   │   ├── regression_model.py   # Regression direction prediction
-│   │   │   ├── consistency_model.py  # Consistency/volatility scorer
+│   │   │   ├── consistency_model.py  # Multi-year sticky-stat consistency scorer
+│   │   │   ├── improvement_model.py  # Skills-stat trajectory scorer
 │   │   │   ├── value_model.py        # Composite AI Value Score
 │   │   │   └── trajectory_model.py   # TFT career trajectory (Phase 3)
 │   │   │
@@ -255,7 +256,7 @@ Critical integration challenge. pybaseball uses MLBAM IDs, FanGraphs has its own
 - `player_id` (FK), `season`, `month`, key rate stats
 
 **`projections`** — model outputs
-- `player_id` (FK), `run_date`, `model_version`, `sleeper_score`, `bust_score`, `regression_direction`, `regression_magnitude`, `consistency_score`, `ai_value_score`, `confidence`, `shap_explanations` (JSONB), `auction_value` (projected dollar value), `dynasty_value` (long-term value score 0-100), `surplus_value` (auction_value minus expected cost)
+- `player_id` (FK), `run_date`, `model_version`, `sleeper_score`, `bust_score`, `regression_direction`, `regression_magnitude`, `consistency_score`, `improvement_score`, `ai_value_score`, `confidence`, `shap_explanations` (JSONB), `stat_consistency_breakdown` (JSONB — per-stat CV values), `stat_improvement_breakdown` (JSONB — per-stat trend slopes and r² values), `auction_value` (projected dollar value), `dynasty_value` (long-term value score 0-100), `surplus_value` (auction_value minus expected cost)
 
 **`scouting_reports`** — cached LLM-generated reports
 - `id` (PK), `player_id` (FK), `report_type` (full/sleeper_spotlight/bust_warning/dynasty_outlook), `content` (TEXT — the full generated report), `model_scores_snapshot` (JSONB — scores at time of generation), `llm_model_version`, `generated_at`, `stale` (boolean — flagged when underlying data changes significantly)
@@ -281,11 +282,52 @@ This is the intellectual core of the pipeline — the quality of features determ
 - `age_bucket`: pre-peak / peak / early-decline / late-decline
 - `post_hype_flag`: age 26-29, former top prospect, MLB underperformer
 
-**Consistency Features (from monthly splits):**
-- `woba_cv`: coefficient of variation of monthly wOBA
-- `woba_iqr`: interquartile range
-- `bad_month_ratio`: fraction of months below league average
-- `hot_streak_magnitude`: max monthly wOBA minus season wOBA
+**Consistency Features (multi-year, weighted by stat stickiness):**
+
+Consistency is measured across seasons (not months within a season). Stats are weighted by their year-over-year correlation — sticky stats that a player repeats reliably are worth more than volatile stats that fluctuate with luck.
+
+*Sticky stat tiers for weighting:*
+| Tier | Hitter Stats (YoY r) | Pitcher Stats (YoY r) |
+|---|---|---|
+| Tier 1 (highest weight) | K% (.84), BB% (.76), ISO (.76) | K% (.75), K-BB% (.70+), SwStr% (high) |
+| Tier 2 | Barrel% (.80), EV (.82), Hard Hit% (.78), GB/FB% (.72-.78) | CSW% (high), GB% (.78), FIP/SIERA |
+| Tier 3 (lowest weight) | wOBA, wRC+, Sprint Speed | xERA, Stuff+ |
+| Excluded (too volatile) | BABIP (.37), AVG, LD% (.22) | ERA (.38), BABIP, LOB% |
+
+*Per-stat consistency calculation:*
+For each sticky stat, compute the coefficient of variation (CV) across the player's last 3 seasons:
+```
+stat_cv = std_dev(stat_year1, stat_year2, stat_year3) / mean(stat_year1, stat_year2, stat_year3)
+```
+A low CV = consistent. Weight each stat's CV by its stickiness tier, then combine:
+```
+weighted_consistency = sum(tier_weight_i * (1 - normalized_cv_i)) / sum(tier_weight_i)
+```
+Scale to 0-100 where 100 = rock-solid across years in sticky stats. Requires minimum 2 seasons of data (3 preferred).
+
+**Improvement Features (multi-year skills-stat trends):**
+
+Track directional trends in skills stats across 2-3 seasons. Only sticky/skills stats are tracked — improvement in volatile stats is ignored as likely noise.
+
+*Hitter skills stats tracked:* K%, BB%, Barrel%, Hard Hit%, EV, Sprint Speed
+*Pitcher skills stats tracked:* K%, BB%, K-BB%, SwStr%, CSW%, GB%
+
+*Per-stat trend calculation:*
+```
+trend_slope = linear_regression_slope(stat over last 3 seasons)
+trend_r² = how well the trend fits (high r² = steady improvement, low = noisy)
+trend_signal = trend_slope * trend_r²  # slope discounted by fit quality
+```
+Aggregate across all tracked stats, weighted by stickiness tier.
+
+*Age-adjusted improvement weighting:*
+```
+age_multiplier:
+  age < 27:  1.2  (improvement aligns with natural development — more likely real)
+  age 27-30: 1.0  (neutral)
+  age 30-33: 0.6  (improvement against aging curve — treat skeptically)
+  age > 33:  0.3  (improvement at this age is almost always noise)
+```
 
 **Context Features:**
 - `team_park_factor`, `lineup_position_avg`, `playing_time_trend`
@@ -362,23 +404,39 @@ Every ML model must demonstrably outperform the Marcel system. Marcel is impleme
 
 **Output:** `regression_direction` (signed float), `regression_confidence` (from quantile regression prediction intervals).
 
-### 4.4 Consistency Score
+### 4.4 Consistency Score (Multi-Year, Sticky-Stat Weighted)
 
-**Not an ML model** — a statistical calculation from monthly splits data.
+**Not an ML model** — a statistical calculation measuring how repeatable a player's skills-based performance is across seasons.
 
-**Formula:**
-```
-consistency_score = 100 - normalize(
-    0.4 * coefficient_of_variation +
-    0.3 * iqr_scaled +
-    0.2 * bad_month_ratio +
-    0.1 * max_drawdown_scaled
-)
-```
+**Why multi-year, not month-to-month:** Month-to-month variance within a season is dominated by small sample noise. A hitter can have a .180 April and a .340 May purely from BABIP variance. Multi-year consistency in *sticky* stats reveals whether a player has an established, reliable skill level — which is what dynasty managers need to trust.
 
-Multi-year smoothing: current season 60%, prior 30%, two seasons ago 10%.
+**Why weight by stat stickiness:** A player who posts consistent K% and Barrel% over 3 years has a genuinely repeatable skill profile. A player who posts consistent AVG or BABIP over 3 years may just be consistently lucky. Weighting by year-over-year correlation ensures the score reflects real skill stability.
 
-**Output:** `consistency_score` (0-100) + monthly performance array for sparkline visualization.
+**Stat Stickiness Tiers:**
+| Tier | Weight | Hitter Stats (YoY r) | Pitcher Stats (YoY r) |
+|---|---|---|---|
+| 1 (most sticky) | 1.0 | K% (.84), BB% (.76), ISO (.76) | K% (.75), K-BB% (.70+), SwStr% |
+| 2 | 0.7 | Barrel% (.80), EV (.82), Hard Hit% (.78), GB/FB% (.75) | CSW%, GB% (.78), FIP, SIERA |
+| 3 | 0.4 | wOBA, wRC+, Sprint Speed | xERA, Stuff+ |
+| Excluded | 0.0 | BABIP (.37), AVG, LD% (.22) | ERA (.38), BABIP, LOB% |
+
+**Calculation:**
+1. For each sticky stat, compute the coefficient of variation (CV) across the player's last 3 seasons:
+   ```
+   stat_cv = std_dev(stat_y1, stat_y2, stat_y3) / mean(stat_y1, stat_y2, stat_y3)
+   ```
+2. Convert each CV to a per-stat consistency score: `stat_consistency = 1 - normalized_cv` (0 = wildly different each year, 1 = near-identical)
+3. Compute the weighted average across all stats using tier weights:
+   ```
+   raw_consistency = sum(tier_weight_i * stat_consistency_i) / sum(tier_weight_i)
+   ```
+4. Scale to 0-100.
+
+**Minimum data requirement:** 2 seasons (3 preferred). Players with only 1 season get no consistency score (displayed as "N/A — insufficient track record").
+
+**What a high score means for dynasty:** A player with consistency 85+ has an established skill floor. You know what you're getting. In an auction, they're safer to pay up for. A player with consistency 40 is a volatile gamble — potentially useful if cheap, but risky at a premium auction price.
+
+**Output:** `consistency_score` (0-100) + per-stat consistency breakdown (for the UI to show which skills are stable vs. volatile) + years of data used.
 
 ### 4.5 AI Value Score (Composite)
 
@@ -393,7 +451,8 @@ ai_value_score = (
     w4 * consistency_score +
     w5 * age_curve_factor +             # Bonus pre-peak, penalty late-decline
     w6 * opportunity_score +            # Playing time / role security
-    w7 * dynasty_premium               # Long-term value (see below)
+    w7 * dynasty_premium +             # Long-term value (see below)
+    w8 * improvement_score             # Skills trajectory (positive = improving, negative = declining)
 )
 ```
 
@@ -411,7 +470,7 @@ dynasty_premium = (
 - A 33-year-old with elite current stats but declining velocity trends gets a dynasty penalty
 - Post-hype sleepers (age 26-29, former top-100 prospect, hasn't broken out yet) get a targeted bonus — these are classic dynasty buy-low windows
 
-Weights `w1-w7` calibrated via linear regression on historical seasons, with dynasty weights trained on multi-year value windows (3-year cumulative fantasy value, not just next season).
+Weights `w1-w8` calibrated via linear regression on historical seasons, with dynasty weights trained on multi-year value windows (3-year cumulative fantasy value, not just next season). The improvement_score component (w8) allows the model to boost players on upward trajectories and penalize those in decline — critical for dynasty where you're buying future seasons.
 
 **League Customization:** `projected_fantasy_value` changes based on user's league settings (categories vs. points, roster composition, keeper/dynasty rules). Rankings adjust accordingly.
 
@@ -432,7 +491,8 @@ For each player, assemble a structured context document containing:
 - Biographical: name, age, team, position, years of control, prospect history
 - Current season stats: all key metrics with league-average comparisons and percentile ranks
 - 3-year trends: each stat's trajectory with direction arrows
-- Model scores: sleeper_score, bust_score, regression_direction, consistency_score, ai_value_score — with the top SHAP features for each
+- Model scores: sleeper_score, bust_score, regression_direction, consistency_score, improvement_score, ai_value_score — with the top SHAP features for each
+- Skills trajectory: per-stat improvement trends (e.g., "K-BB% improved 10% → 14% → 18% over 3 seasons, r²=0.99") and per-stat consistency breakdown
 - Differentials: xwOBA vs. wOBA, xBA vs. BA, xERA vs. ERA — the "luck gap"
 - Dynasty context: age curve position, years until free agency, comparable players at this age
 - Auction context: projected dollar value, expected cost, surplus value
@@ -509,6 +569,70 @@ surplus_value = projected_dollar_value - expected_auction_cost
 
 **Output:** `auction_value` (dollar amount), `dynasty_value` (0-100 long-term score), `surplus_value` (dollar amount), `keep_cut_horizon` (years until keeper cost exceeds value).
 
+### 4.8 Improvement Score (Skills-Stat Trajectory)
+
+**Objective:** Quantify whether a player is on a genuine developmental trajectory by measuring consistent year-over-year improvement in skills stats. Distinct from the Regression model (which looks at actual-vs-expected gaps for a single season), the Improvement Score looks at multi-year directional trends in the stats most likely to reflect real skill changes.
+
+**Not an ML model** — a statistical calculation from multi-year skills-stat trends, with age-based weighting informed by developmental curve research.
+
+**Why this matters for dynasty:** In a dynasty league, you're not just buying current production — you're buying a trajectory. A 24-year-old pitcher whose K-BB% has improved from 10% → 14% → 18% over three seasons is on a developmental curve that suggests further gains (or at minimum, sustainment). That trajectory is worth paying for, even if his current ERA doesn't reflect it yet. Conversely, a 32-year-old whose K% is declining year-over-year is on a trajectory that auction price hasn't caught up to yet.
+
+**Research basis:**
+- K% and BB% are "the most predictive statistics by a considerable margin" (Nate Silver / PECOTA)
+- Players naturally improve until ~27, with biggest gains before 25. Improvement that aligns with the aging curve is more trustworthy.
+- Gradual multi-year improvement (high trend r²) is more sustainable than a single-year spike (low trend r²)
+- Skills stats (K%, BB%, Barrel%, EV) improvements backed by mechanical/approach changes tend to stick; outcome stat (AVG, ERA, BABIP) improvements tend to regress
+
+**Skills Stats Tracked:**
+
+| Hitters | Pitchers |
+|---|---|
+| K% (lower = better) | K% (higher = better) |
+| BB% (higher = better) | BB% (lower = better) |
+| Barrel% | K-BB% |
+| Hard Hit% | SwStr% |
+| Avg Exit Velocity | CSW% |
+| Sprint Speed | GB% (context-dependent) |
+
+**Calculation:**
+1. For each skills stat, fit a linear regression across 3 seasons (minimum 2):
+   ```
+   trend_slope = slope of (stat_y1, stat_y2, stat_y3)
+   trend_r² = goodness of fit (1.0 = perfectly linear improvement, 0.0 = no trend)
+   ```
+2. Compute a per-stat improvement signal, discounting noisy trends:
+   ```
+   stat_improvement = normalize(trend_slope) * trend_r²
+   ```
+   A strong slope with poor fit (one-year spike then reversion) gets discounted. A moderate slope with excellent fit (steady gains) gets full credit.
+3. Weight each stat by its stickiness tier (same tiers as Consistency Score).
+4. Apply age multiplier:
+   ```
+   age < 27:  × 1.2  (aligns with natural development — high trust)
+   age 27-30: × 1.0  (neutral)
+   age 30-33: × 0.6  (against aging curve — skeptical)
+   age > 33:  × 0.3  (almost certainly noise)
+   ```
+5. Aggregate and scale to 0-100. Score can also be negative (consistent decline), scaled to -100 to 0 for declining players.
+
+**Score interpretation:**
+| Range | Meaning |
+|---|---|
+| 70-100 | Strong, sustained skills improvement — likely real development |
+| 40-69 | Moderate improvement trend — promising but watch for regression |
+| 10-39 | Mild improvement or mixed signals |
+| -10 to 10 | Flat / no meaningful trend |
+| -10 to -39 | Mild decline in skills |
+| -40 to -100 | Significant skills erosion — sell candidate in dynasty |
+
+**Interaction with other models:**
+- High improvement_score + high sleeper_score = strongest buy signal (improving AND undervalued)
+- High improvement_score + low consistency_score = "volatile improver" — the improvement is real but the player hasn't stabilized yet (higher-risk, higher-reward)
+- Negative improvement_score + high bust_score = strongest sell signal (declining AND overvalued)
+- The improvement_score feeds into the AI Value Score as an additional component and is referenced in LLM scouting reports
+
+**Output:** `improvement_score` (-100 to 100) + per-stat trend breakdown (slope, r², direction for each skills stat) + age multiplier applied.
+
 ---
 
 ## 5. API Design
@@ -564,7 +688,7 @@ surplus_value = projected_dollar_value - expected_auction_cost
 - Quick-search bar, model freshness indicator
 
 **Player Rankings (`/players`)** — Full-width sortable/filterable table (Tanstack Table):
-- Columns: Rank, Name, Team, Pos, Age, AI Value Score, Auction $, Surplus $, Dynasty Value, Sleeper Score, Bust Score, Consistency, key stats
+- Columns: Rank, Name, Team, Pos, Age, AI Value Score, Auction $, Surplus $, Dynasty Value, Sleeper Score, Bust Score, Consistency, Improvement, key stats
 - Sidebar filters: position, team, age range, min PA/IP
 - Toggle: All / Batters / Pitchers
 - View presets: "Dynasty Rankings" / "Auction Values" / "Sleeper Board" / "Bust Watch"
@@ -647,7 +771,8 @@ surplus_value = projected_dollar_value - expected_auction_cost
 - Train regression model (XGBoost + LightGBM regressors)
 - Implement backtesting framework with walk-forward validation
 - Implement Optuna hyperparameter tuning
-- Implement consistency scoring from monthly splits
+- Implement consistency scoring (multi-year CV across sticky stats, weighted by stickiness tier)
+- Implement improvement scoring (skills-stat trend slopes × r² × age multiplier)
 - Implement composite AI Value Score with dynasty premium weighting
 - Integrate SHAP for feature explanations
 - Build unified inference pipeline
