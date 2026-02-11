@@ -25,11 +25,25 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/fantasy_baseball
       DATABASE_URL_SYNC: postgresql://postgres:postgres@db:5432/fantasy_baseball
       APP_ENV: development
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./backend:/app/backend
+      - model-artifacts:/app/backend/ml/artifacts
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://api:8000
+    depends_on:
+      - api
 
 volumes:
   pgdata:
+  model-artifacts:
