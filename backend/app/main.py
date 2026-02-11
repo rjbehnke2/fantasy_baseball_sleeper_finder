@@ -18,7 +18,23 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     logger.info("Fantasy Baseball Sleeper Finder API starting up")
     logger.info(f"Environment: {settings.app_env}")
+
+    # Start APScheduler for nightly/weekly jobs (production only)
+    if settings.app_env == "production":
+        try:
+            from backend.data_pipeline.orchestrator import start_scheduler, stop_scheduler
+            start_scheduler()
+        except Exception as e:
+            logger.warning(f"Scheduler failed to start: {e}")
+
     yield
+
+    if settings.app_env == "production":
+        try:
+            from backend.data_pipeline.orchestrator import stop_scheduler
+            stop_scheduler()
+        except Exception:
+            pass
     logger.info("API shutting down")
 
 
