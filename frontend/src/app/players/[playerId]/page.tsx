@@ -6,6 +6,7 @@ import Link from "next/link";
 import { getPlayer } from "@/lib/api";
 import type { PlayerDetail } from "@/lib/types";
 import { ScoutingReportDisplay } from "@/components/players/scouting-report";
+import { StatTrendChart } from "@/components/charts/stat-trend";
 import { ScoreBadge } from "@/components/ui/score-badge";
 import { DollarBadge } from "@/components/ui/dollar-badge";
 import { formatStat, formatPct, cn } from "@/lib/utils";
@@ -103,6 +104,14 @@ export default function PlayerDetailPage() {
             } />
           </div>
         </div>
+      )}
+
+      {/* Stat Trend Charts */}
+      {(isBatter || isPitcher) && (
+        <StatTrendChart
+          battingSeasons={isBatter ? player.batting_seasons : undefined}
+          pitchingSeasons={isPitcher ? player.pitching_seasons : undefined}
+        />
       )}
 
       {/* Batting Stats */}
