@@ -7,6 +7,7 @@ import { getPlayer } from "@/lib/api";
 import type { PlayerDetail } from "@/lib/types";
 import { ScoutingReportDisplay } from "@/components/players/scouting-report";
 import { StatTrendChart } from "@/components/charts/stat-trend";
+import { DynastyTrajectoryChart } from "@/components/charts/dynasty-trajectory";
 import { ScoreBadge } from "@/components/ui/score-badge";
 import { DollarBadge } from "@/components/ui/dollar-badge";
 import { formatStat, formatPct, cn } from "@/lib/utils";
@@ -105,6 +106,9 @@ export default function PlayerDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Dynasty Trajectory Chart */}
+      <DynastyTrajectoryChart playerId={playerId} playerName={player.full_name} />
 
       {/* Stat Trend Charts */}
       {(isBatter || isPitcher) && (
