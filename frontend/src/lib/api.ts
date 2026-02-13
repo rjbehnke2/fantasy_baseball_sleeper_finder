@@ -62,6 +62,25 @@ export async function getDynastyRankings(limit = 50): Promise<RankingsResponse> 
   return fetchJSON(`${API_BASE}/rankings/dynasty?limit=${limit}`);
 }
 
+// Trajectory
+export async function getPlayerTrajectory(playerId: number): Promise<{
+  player_id: number;
+  current_value: number;
+  peak_season: number;
+  peak_value: number;
+  career_value_remaining: number;
+  trajectory_grade: string;
+  trajectory: {
+    season: number;
+    projected_value: number;
+    upper_bound: number;
+    lower_bound: number;
+    age: number;
+  }[];
+}> {
+  return fetchJSON(`${API_BASE}/players/${playerId}/trajectory`);
+}
+
 // Scouting Reports
 export async function getScoutingReport(
   playerId: number,

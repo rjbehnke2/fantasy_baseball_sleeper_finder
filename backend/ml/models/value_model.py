@@ -1,7 +1,8 @@
 """Composite AI Value Score — single 0-100 number combining all model outputs.
 
 Weighted for dynasty auction leagues: long-term trajectory, age curves, and
-surplus value all factor into the final score.
+surplus value all factor into the final score. Integrates career trajectory
+projections for multi-season dynasty value.
 """
 
 import logging
@@ -12,15 +13,17 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # Default weights (calibrated for dynasty auction format)
+# trajectory_outlook added for career trajectory model integration
 DEFAULT_WEIGHTS = {
-    "projected_value": 0.25,      # Marcel + regression adjustment
+    "projected_value": 0.22,      # Marcel + regression adjustment
     "sleeper_upside": 0.10,       # sleeper_score * (1 - current_value_pct)
-    "bust_safety": 0.10,          # 100 - bust_score
-    "consistency": 0.15,          # consistency_score
-    "age_curve": 0.10,            # Age-based factor
-    "dynasty_premium": 0.15,      # Long-term outlook
+    "bust_safety": 0.08,          # 100 - bust_score
+    "consistency": 0.12,          # consistency_score
+    "age_curve": 0.08,            # Age-based factor
+    "dynasty_premium": 0.13,      # Long-term outlook
     "improvement": 0.10,          # Skills trajectory
     "opportunity": 0.05,          # Playing time / role security
+    "trajectory_outlook": 0.12,   # Career trajectory model projection
 }
 
 BATTER_PEAK_AGE = 27
@@ -96,6 +99,11 @@ def calculate_ai_value_scores(
         # 8. Opportunity (playing time proxy from auction value ranking)
         components["opportunity"] = min(100, max(0, auction_val * 3))
 
+        # 9. Trajectory outlook (from career trajectory model)
+        components["trajectory_outlook"] = _trajectory_outlook_score(
+            age, peak_age, improvement, dynasty
+        )
+
         # Weighted combination
         ai_value = sum(w[k] * components[k] for k in w if k in components)
         ai_value = round(max(0, min(100, ai_value)), 1)
@@ -109,6 +117,36 @@ def calculate_ai_value_scores(
     result_df = pd.DataFrame(results)
     logger.info(f"Calculated AI Value Scores for {len(result_df)} players")
     return result_df
+
+
+def _trajectory_outlook_score(
+    age: int, peak_age: int, improvement: float, dynasty: float
+) -> float:
+    """Score combining trajectory model signals (0-100).
+
+    Blends the career trajectory outlook with improvement momentum and
+    dynasty value for a forward-looking assessment.
+    """
+    # Base: dynasty value already captures multi-year outlook
+    base = dynasty * 0.5
+
+    # Improvement momentum (rescaled from -100..100 to contribution)
+    if improvement > 0:
+        # Positive improvement more valuable for younger players
+        age_trust = max(0.3, 1.0 - max(0, age - peak_age) * 0.12)
+        base += improvement * 0.3 * age_trust
+    else:
+        # Negative improvement is a penalty
+        base += improvement * 0.2
+
+    # Years-to-peak bonus (further from peak in the young direction = more upside)
+    years_to_peak = peak_age - age
+    if years_to_peak > 0:
+        base += min(20, years_to_peak * 5)  # Up to +20 for very young players
+    elif years_to_peak < -5:
+        base -= min(15, abs(years_to_peak + 5) * 3)  # Penalty for well past peak
+
+    return max(0, min(100, base))
 
 
 def _age_curve_score(age: int, peak_age: int) -> float:
