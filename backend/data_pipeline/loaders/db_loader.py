@@ -24,16 +24,25 @@ async def upsert_players_from_id_map(session: AsyncSession, id_map: pd.DataFrame
     """
     count = 0
     for _, row in id_map.iterrows():
+        fg_id = row.get("fangraphs_id")
+        # Treat -1 and NaN as no FanGraphs ID
+        if pd.isna(fg_id) or str(fg_id) in ("-1", "<NA>", "None", "nan"):
+            fg_id = None
+        else:
+            fg_id = str(fg_id)
+
+        bb_id = str(row["bbref_id"]) if pd.notna(row.get("bbref_id")) else None
+
         stmt = insert(Player).values(
             mlbam_id=int(row["mlbam_id"]),
-            fangraphs_id=str(row["fangraphs_id"]) if pd.notna(row.get("fangraphs_id")) else None,
-            bbref_id=str(row["bbref_id"]) if pd.notna(row.get("bbref_id")) else None,
+            fangraphs_id=fg_id,
+            bbref_id=bb_id,
             full_name=str(row["full_name"]),
         ).on_conflict_do_update(
             index_elements=["mlbam_id"],
             set_={
-                "fangraphs_id": str(row["fangraphs_id"]) if pd.notna(row.get("fangraphs_id")) else None,
-                "bbref_id": str(row["bbref_id"]) if pd.notna(row.get("bbref_id")) else None,
+                "fangraphs_id": fg_id,
+                "bbref_id": bb_id,
                 "full_name": str(row["full_name"]),
             },
         )
