@@ -33,7 +33,7 @@ def build_player_id_map() -> pd.DataFrame:
     # We use mlb_played_first/last as proxies for debut year.
     id_map = pd.DataFrame({
         "mlbam_id": register["key_mlbam"].astype(int),
-        "fangraphs_id": register["key_fangraphs"].astype("Int64").astype(str).replace("<NA>", None),
+        "fangraphs_id": register["key_fangraphs"].astype("Int64").astype(str).replace({"<NA>": None, "-1": None}),
         "bbref_id": register["key_bbref"],
         "full_name": register["name_first"].str.strip() + " " + register["name_last"].str.strip(),
         "mlb_played_first": register.get("mlb_played_first"),
