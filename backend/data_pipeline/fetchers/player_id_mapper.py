@@ -29,14 +29,15 @@ def build_player_id_map() -> pd.DataFrame:
     register = register[register["key_mlbam"].notna()].copy()
 
     # Build the mapping table
+    # Note: Chadwick register no longer includes birth date columns.
+    # We use mlb_played_first/last as proxies for debut year.
     id_map = pd.DataFrame({
         "mlbam_id": register["key_mlbam"].astype(int),
         "fangraphs_id": register["key_fangraphs"].astype("Int64").astype(str).replace("<NA>", None),
         "bbref_id": register["key_bbref"],
         "full_name": register["name_first"].str.strip() + " " + register["name_last"].str.strip(),
-        "birth_year": register["birth_year"],
-        "birth_month": register["birth_month"],
-        "birth_day": register["birth_day"],
+        "mlb_played_first": register.get("mlb_played_first"),
+        "mlb_played_last": register.get("mlb_played_last"),
     })
 
     # Drop exact duplicates
