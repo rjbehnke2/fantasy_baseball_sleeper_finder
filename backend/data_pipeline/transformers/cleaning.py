@@ -118,7 +118,8 @@ def clean_batting_stats(df: pd.DataFrame) -> pd.DataFrame:
         if col in cleaned.columns:
             cleaned[col] = pd.to_numeric(cleaned[col], errors="coerce")
 
-    cleaned["fangraphs_id"] = cleaned["fangraphs_id"].astype(str)
+    if "fangraphs_id" in cleaned.columns:
+        cleaned["fangraphs_id"] = cleaned["fangraphs_id"].astype(str)
 
     logger.info(f"Cleaned batting stats: {len(cleaned)} rows, {len(cleaned.columns)} columns")
     return cleaned
@@ -150,7 +151,8 @@ def clean_pitching_stats(df: pd.DataFrame) -> pd.DataFrame:
         if col in cleaned.columns:
             cleaned[col] = pd.to_numeric(cleaned[col], errors="coerce")
 
-    cleaned["fangraphs_id"] = cleaned["fangraphs_id"].astype(str)
+    if "fangraphs_id" in cleaned.columns:
+        cleaned["fangraphs_id"] = cleaned["fangraphs_id"].astype(str)
 
     logger.info(f"Cleaned pitching stats: {len(cleaned)} rows, {len(cleaned.columns)} columns")
     return cleaned
