@@ -47,13 +47,23 @@ cp .env.example .env
 ### 2. Start the stack
 
 ```bash
-docker compose up -d
+docker compose up --build -d
 ```
 
 This starts three containers:
 - **PostgreSQL** on port `5432`
 - **FastAPI backend** on port `8000`
 - **Next.js frontend** on port `3000`
+
+> **Important:** Always use `--build` when starting up after code changes.
+> The backend uses a volume mount and picks up changes automatically, but
+> the **frontend must be rebuilt** because Next.js compiles everything at
+> build time. If pages look empty or stale, force a full rebuild:
+> ```bash
+> docker compose down
+> docker compose build --no-cache frontend
+> docker compose up -d
+> ```
 
 ### 3. Seed the database and generate projections
 
@@ -80,6 +90,7 @@ docker compose exec api python -m scripts.run_inference
 - **Frontend:** [http://localhost:3000](http://localhost:3000)
 - **API docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
 - **Health check:** [http://localhost:8000/health](http://localhost:8000/health)
+- **Diagnostics:** [http://localhost:3000/debug](http://localhost:3000/debug) — tests API connectivity through the proxy and directly
 
 ## Running Without Docker
 
@@ -273,6 +284,19 @@ python -m pytest backend/tests/test_ml/test_trajectory.py -v
 
 ## Troubleshooting
 
+**Rankings/Sleepers/Busts pages are empty:** This usually means the frontend is running a stale Docker image. Force a full rebuild:
+```bash
+docker compose down
+docker compose build --no-cache frontend
+docker compose up -d
+```
+Then visit [http://localhost:3000/debug](http://localhost:3000/debug) to run automated connectivity tests. You can also test the API directly at [http://localhost:8000/api/v1/rankings?limit=3](http://localhost:8000/api/v1/rankings?limit=3) to verify the backend is serving data.
+
+To check API logs:
+```bash
+docker compose logs api
+```
+
 **Port already in use:** If port 8000 is taken, edit `docker-compose.yml` and change `"8000:8000"` to `"8080:8000"` (or any free port).
 
 **FanGraphs data fetch fails:** FanGraphs periodically blocks API access. The app automatically falls back to Baseball Reference. BBRef provides core stats (AVG, OBP, SLG, HR, WAR) but not advanced Statcast metrics (Barrel%, xwOBA).
@@ -285,7 +309,7 @@ docker compose up -d
 docker compose exec api python -m scripts.seed_database
 ```
 
-**Changes not reflected after code edits:** Docker may cache old images. Rebuild with `docker compose build --no-cache`.
+**Changes not reflected after code edits:** The backend uses a volume mount (`./backend:/app/backend`) and picks up code changes automatically (restart the `api` container to apply). The frontend does **not** have a volume mount — it must be rebuilt with `docker compose build --no-cache frontend` after any frontend code changes.
 
 ## License
 
