@@ -1,5 +1,7 @@
 """AI rankings endpoints."""
 
+import logging
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -7,6 +9,8 @@ from backend.app.db.session import get_db
 from backend.app.schemas.player import PlayerSummary
 from backend.app.schemas.rankings import RankedPlayer, RankingsResponse
 from backend.app.services.player_service import get_players_with_projections
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rankings", tags=["rankings"])
 
@@ -19,9 +23,11 @@ async def get_rankings(
     db: AsyncSession = Depends(get_db),
 ):
     """Get AI-powered player rankings with value breakdowns."""
+    logger.info(f"GET /rankings sort_by={sort_by} limit={limit} position={position}")
     results = await get_players_with_projections(
         db, sort_by=sort_by, sort_order="desc", position=position, limit=limit
     )
+    logger.info(f"  → query returned {len(results)} results")
 
     rankings = []
     for rank, item in enumerate(results, 1):
@@ -48,11 +54,13 @@ async def get_rankings(
             value_breakdown=proj.shap_explanations if proj else None,
         ))
 
-    return RankingsResponse(
+    response = RankingsResponse(
         rankings=rankings,
         total=len(rankings),
         ranking_type=sort_by,
     )
+    logger.info(f"  → returning {len(rankings)} ranked players")
+    return response
 
 
 @router.get("/sleepers", response_model=RankingsResponse)
@@ -103,9 +111,11 @@ async def _get_ranked_by(
     ranking_type: str,
 ) -> RankingsResponse:
     """Helper to build rankings by any projection score."""
+    logger.info(f"GET /rankings/{ranking_type} sort_by={score_field} limit={limit}")
     results = await get_players_with_projections(
         db, sort_by=score_field, sort_order="desc", position=position, limit=limit
     )
+    logger.info(f"  → query returned {len(results)} results")
 
     rankings = []
     for rank, item in enumerate(results, 1):
@@ -128,4 +138,5 @@ async def _get_ranked_by(
         )
         rankings.append(RankedPlayer(rank=rank, player=summary))
 
+    logger.info(f"  → returning {len(rankings)} ranked players for {ranking_type}")
     return RankingsResponse(rankings=rankings, total=len(rankings), ranking_type=ranking_type)
