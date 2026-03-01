@@ -110,7 +110,7 @@ def project_batter(seasons: list[dict], age: int) -> dict:
 
     for stat in BATTER_COUNTING_STATS:
         rate = _counting_to_rate(seasons, stat, "pa")
-        if rate is not None:
+        if rate is not None and not np.isnan(rate) and projected_pa > 0:
             projections[stat] = round(rate * projected_pa)
 
     return projections
@@ -171,17 +171,18 @@ def project_pitcher(seasons: list[dict], age: int) -> dict:
 
     # Project strikeouts and wins
     k_per_ip = _counting_to_rate(seasons, "so", "ip")
-    if k_per_ip is not None:
+    if k_per_ip is not None and not np.isnan(k_per_ip) and not np.isnan(projected_ip):
         projections["so"] = round(k_per_ip * projected_ip)
 
     w_per_ip = _counting_to_rate(seasons, "w", "ip")
-    if w_per_ip is not None:
+    if w_per_ip is not None and not np.isnan(w_per_ip) and not np.isnan(projected_ip):
         projections["w"] = round(w_per_ip * projected_ip)
 
     sv_per_g = _counting_to_rate(seasons, "sv", "g")
-    if sv_per_g is not None:
+    if sv_per_g is not None and not np.isnan(sv_per_g):
         projected_g = _project_games_pitcher(seasons)
-        projections["sv"] = round(sv_per_g * projected_g)
+        if projected_g and not np.isnan(projected_g):
+            projections["sv"] = round(sv_per_g * projected_g)
 
     return projections
 
@@ -302,11 +303,22 @@ def _counting_to_rate(seasons: list[dict], counting_stat: str, denom_stat: str) 
     for i, s in enumerate(seasons[:3]):
         if i not in YEAR_WEIGHTS:
             break
-        count = s.get(counting_stat, 0) or 0
-        denom = s.get(denom_stat, 0) or 0
-        if denom > 0:
+        count = _safe_numeric(s.get(counting_stat, 0))
+        denom = _safe_numeric(s.get(denom_stat, 0))
+        if denom > 0 and not np.isnan(count):
             rate = count / denom
             weight = YEAR_WEIGHTS[i] * denom
             weighted_rate += rate * weight
             weight_total += weight
     return weighted_rate / weight_total if weight_total > 0 else None
+
+
+def _safe_numeric(val) -> float:
+    """Convert a value to float, treating None/NaN as 0."""
+    if val is None:
+        return 0.0
+    try:
+        f = float(val)
+        return 0.0 if np.isnan(f) else f
+    except (ValueError, TypeError):
+        return 0.0
