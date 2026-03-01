@@ -55,6 +55,23 @@ class Predictor:
             else:
                 logger.warning(f"Model artifact not found: {path}")
 
+        if not self.models:
+            logger.warning(
+                "NO ML model artifacts found in %s. "
+                "All sleeper/bust/regression scores will use default values (50.0). "
+                "Run the training pipeline first: python -m backend.ml.training.train_pipeline",
+                self.artifacts_dir,
+            )
+        else:
+            missing = set(model_files) - set(self.models)
+            if missing:
+                logger.warning(
+                    "Some model artifacts missing (%s). "
+                    "Affected scores will use defaults. "
+                    "Re-run training to generate all models.",
+                    ", ".join(sorted(missing)),
+                )
+
     def predict_all(
         self,
         batter_features: pd.DataFrame,
@@ -126,6 +143,11 @@ class Predictor:
             shap_map = {r["player_id"]: r["shap_features"] for r in shap_results}
             scores["sleeper_shap"] = scores["player_id"].map(shap_map)
         else:
+            logger.warning(
+                "No %s model found — assigning default sleeper_score=50.0 "
+                "to all %d %ss",
+                sleeper_key, len(scores), player_type,
+            )
             scores["sleeper_score"] = 50.0
             scores["sleeper_shap"] = None
 
@@ -139,6 +161,11 @@ class Predictor:
             shap_map = {r["player_id"]: r["shap_features"] for r in shap_results}
             scores["bust_shap"] = scores["player_id"].map(shap_map)
         else:
+            logger.warning(
+                "No %s model found — assigning default bust_score=50.0 "
+                "to all %d %ss",
+                bust_key, len(scores), player_type,
+            )
             scores["bust_score"] = 50.0
             scores["bust_shap"] = None
 
@@ -148,6 +175,11 @@ class Predictor:
             reg_preds = predict_regression(self.models[reg_key], features)
             scores = scores.merge(reg_preds, on="player_id", how="left")
         else:
+            logger.warning(
+                "No %s model found — assigning default regression scores "
+                "to all %d %ss",
+                reg_key, len(scores), player_type,
+            )
             scores["regression_direction"] = 0.0
             scores["regression_magnitude"] = 0.0
 
