@@ -15,6 +15,7 @@ This script:
 
 import asyncio
 import logging
+import math
 from datetime import date, datetime
 
 import pandas as pd
@@ -273,10 +274,10 @@ async def _save_projections(scores: pd.DataFrame, marcel_map: dict) -> int:
                 "auction_value": _safe_float(row.get("auction_value")),
                 "dynasty_value": _safe_float(row.get("dynasty_value")),
                 "surplus_value": _safe_float(row.get("surplus_value")),
-                "shap_explanations": row.get("shap_explanations"),
-                "stat_consistency_breakdown": row.get("stat_consistency_breakdown"),
-                "stat_improvement_breakdown": row.get("stat_improvement_breakdown"),
-                "marcel_projections": marcel_map.get(pid),
+                "shap_explanations": _sanitize_jsonb(row.get("shap_explanations")),
+                "stat_consistency_breakdown": _sanitize_jsonb(row.get("stat_consistency_breakdown")),
+                "stat_improvement_breakdown": _sanitize_jsonb(row.get("stat_improvement_breakdown")),
+                "marcel_projections": _sanitize_jsonb(marcel_map.get(pid)),
             }
 
             # Handle value_components from AI value score
@@ -284,7 +285,7 @@ async def _save_projections(scores: pd.DataFrame, marcel_map: dict) -> int:
             if isinstance(vc, dict):
                 values["shap_explanations"] = values.get("shap_explanations") or {}
                 if isinstance(values["shap_explanations"], dict):
-                    values["shap_explanations"]["value_components"] = vc
+                    values["shap_explanations"]["value_components"] = _sanitize_jsonb(vc)
 
             stmt = insert(Projection).values(**values)
             await session.execute(stmt)
@@ -303,10 +304,58 @@ def _safe_float(val) -> float | None:
     if val is None:
         return None
     try:
-        import math
         f = float(val)
         return None if math.isnan(f) else round(f, 4)
     except (ValueError, TypeError):
+        return None
+
+
+def _sanitize_jsonb(val):
+    """Recursively sanitize a value for JSONB storage.
+
+    Replaces NaN/Infinity with None, converts numpy types to Python types,
+    and returns None for non-dict/list/scalar values.
+    """
+    if val is None:
+        return None
+
+    # Handle pandas NaN-like values
+    if isinstance(val, float):
+        if math.isnan(val) or math.isinf(val):
+            return None
+        return val
+
+    # Handle numpy scalar types
+    try:
+        import numpy as np
+        if isinstance(val, (np.integer,)):
+            return int(val)
+        if isinstance(val, (np.floating,)):
+            f = float(val)
+            return None if math.isnan(f) or math.isinf(f) else f
+        if isinstance(val, np.bool_):
+            return bool(val)
+        if isinstance(val, np.ndarray):
+            return _sanitize_jsonb(val.tolist())
+    except ImportError:
+        pass
+
+    # Recurse into dicts
+    if isinstance(val, dict):
+        return {k: _sanitize_jsonb(v) for k, v in val.items()}
+
+    # Recurse into lists
+    if isinstance(val, list):
+        return [_sanitize_jsonb(v) for v in val]
+
+    # Strings, ints, bools pass through
+    if isinstance(val, (str, int, bool)):
+        return val
+
+    # Fallback: try converting to a Python primitive
+    try:
+        return str(val)
+    except Exception:
         return None
 
 
