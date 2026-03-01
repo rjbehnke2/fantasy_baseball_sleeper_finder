@@ -2,6 +2,7 @@ import type {
   PlayerDetail,
   PlayerListResponse,
   RankingsResponse,
+  RankedPlayer,
   ScoutingReport,
   LeagueSettings,
 } from "./types";
@@ -14,6 +15,42 @@ async function fetchJSON<T>(url: string): Promise<T> {
     throw new Error(`API error: ${res.status} ${res.statusText}`);
   }
   return res.json();
+}
+
+/**
+ * Transform the backend rankings response (nested {rank, player: {...}})
+ * into the flat RankedPlayer[] the frontend components expect.
+ */
+function normalizeRankings(apiResponse: {
+  rankings?: { rank: number; player: Record<string, unknown> }[];
+  players?: RankedPlayer[];
+  total: number;
+}): RankingsResponse {
+  // If already in the expected format, return as-is
+  if (apiResponse.players) {
+    return apiResponse as RankingsResponse;
+  }
+
+  const players: RankedPlayer[] = (apiResponse.rankings || []).map((entry) => {
+    const p = entry.player;
+    return {
+      player_id: p.id as number,
+      full_name: p.full_name as string,
+      team: (p.team as string) ?? null,
+      position: (p.position as string) ?? null,
+      age: (p.age as number) ?? null,
+      ai_value_score: (p.ai_value_score as number) ?? null,
+      sleeper_score: (p.sleeper_score as number) ?? null,
+      bust_score: (p.bust_score as number) ?? null,
+      consistency_score: (p.consistency_score as number) ?? null,
+      improvement_score: (p.improvement_score as number) ?? null,
+      auction_value: (p.auction_value as number) ?? null,
+      dynasty_value: (p.dynasty_value as number) ?? null,
+      surplus_value: (p.surplus_value as number) ?? null,
+    };
+  });
+
+  return { players, total: apiResponse.total };
 }
 
 // Players
@@ -47,19 +84,23 @@ export async function getRankings(params?: {
 }): Promise<RankingsResponse> {
   const query = new URLSearchParams();
   if (params?.limit) query.set("limit", String(params.limit));
-  return fetchJSON(`${API_BASE}/rankings?${query}`);
+  const raw = await fetchJSON<Record<string, unknown>>(`${API_BASE}/rankings?${query}`);
+  return normalizeRankings(raw as Parameters<typeof normalizeRankings>[0]);
 }
 
 export async function getSleepers(limit = 50): Promise<RankingsResponse> {
-  return fetchJSON(`${API_BASE}/rankings/sleepers?limit=${limit}`);
+  const raw = await fetchJSON<Record<string, unknown>>(`${API_BASE}/rankings/sleepers?limit=${limit}`);
+  return normalizeRankings(raw as Parameters<typeof normalizeRankings>[0]);
 }
 
 export async function getBusts(limit = 50): Promise<RankingsResponse> {
-  return fetchJSON(`${API_BASE}/rankings/busts?limit=${limit}`);
+  const raw = await fetchJSON<Record<string, unknown>>(`${API_BASE}/rankings/busts?limit=${limit}`);
+  return normalizeRankings(raw as Parameters<typeof normalizeRankings>[0]);
 }
 
 export async function getDynastyRankings(limit = 50): Promise<RankingsResponse> {
-  return fetchJSON(`${API_BASE}/rankings/dynasty?limit=${limit}`);
+  const raw = await fetchJSON<Record<string, unknown>>(`${API_BASE}/rankings/dynasty?limit=${limit}`);
+  return normalizeRankings(raw as Parameters<typeof normalizeRankings>[0]);
 }
 
 // Trajectory
