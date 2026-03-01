@@ -12,7 +12,9 @@ const API_BASE = "/api/v1";
 async function fetchJSON<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`API error: ${res.status} ${res.statusText}`);
+    const msg = `API error: ${res.status} ${res.statusText} for ${url}`;
+    console.error(msg);
+    throw new Error(msg);
   }
   return res.json();
 }

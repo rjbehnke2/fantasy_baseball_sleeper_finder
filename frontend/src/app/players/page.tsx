@@ -12,7 +12,7 @@ export default function PlayersPage() {
   useEffect(() => {
     getRankings({ limit: 500 })
       .then((data) => setPlayers(data.players))
-      .catch(() => setPlayers([]))
+      .catch((e) => { console.error("PlayersPage: API error:", e); setPlayers([]); })
       .finally(() => setLoading(false));
   }, []);
 

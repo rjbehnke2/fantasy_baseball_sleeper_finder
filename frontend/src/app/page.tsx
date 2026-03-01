@@ -14,9 +14,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     Promise.all([
-      getSleepers(5).catch(() => ({ players: [] })),
-      getBusts(5).catch(() => ({ players: [] })),
-      getRankings({ limit: 5 }).catch(() => ({ players: [] })),
+      getSleepers(5).catch((e) => { console.error("Dashboard: getSleepers failed:", e); return { players: [] }; }),
+      getBusts(5).catch((e) => { console.error("Dashboard: getBusts failed:", e); return { players: [] }; }),
+      getRankings({ limit: 5 }).catch((e) => { console.error("Dashboard: getRankings failed:", e); return { players: [] }; }),
     ]).then(([s, b, v]) => {
       setSleepers(s.players);
       setBusts(b.players);

@@ -22,7 +22,7 @@ export default function PlayerDetailPage() {
     if (!playerId) return;
     getPlayer(playerId)
       .then(setPlayer)
-      .catch(() => setPlayer(null))
+      .catch((e) => { console.error("PlayerDetail: API error:", e); setPlayer(null); })
       .finally(() => setLoading(false));
   }, [playerId]);
 
