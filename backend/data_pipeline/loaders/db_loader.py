@@ -60,7 +60,9 @@ async def upsert_players_from_id_map(session: AsyncSession, id_map: pd.DataFrame
 async def load_batting_seasons(session: AsyncSession, df: pd.DataFrame) -> int:
     """Load cleaned batting stats into the database.
 
-    Looks up player_id from fangraphs_id, then inserts or updates batting seasons.
+    Looks up player_id from fangraphs_id first, then falls back to
+    name-based matching for data sources without FanGraphs IDs (e.g.
+    Baseball Reference).
 
     Args:
         session: Async database session.
@@ -70,13 +72,10 @@ async def load_batting_seasons(session: AsyncSession, df: pd.DataFrame) -> int:
         Number of rows loaded.
     """
     count = 0
-    # Build fangraphs_id -> player_id lookup
-    result = await session.execute(select(Player.id, Player.fangraphs_id))
-    fg_to_pid = {row.fangraphs_id: row.id for row in result if row.fangraphs_id}
+    fg_to_pid, name_to_pid = await _build_player_lookups(session)
 
     for _, row in df.iterrows():
-        fg_id = str(row.get("fangraphs_id", ""))
-        player_id = fg_to_pid.get(fg_id)
+        player_id = _resolve_player_id(row, fg_to_pid, name_to_pid)
         if player_id is None:
             continue
 
@@ -112,12 +111,10 @@ async def load_pitching_seasons(session: AsyncSession, df: pd.DataFrame) -> int:
         Number of rows loaded.
     """
     count = 0
-    result = await session.execute(select(Player.id, Player.fangraphs_id))
-    fg_to_pid = {row.fangraphs_id: row.id for row in result if row.fangraphs_id}
+    fg_to_pid, name_to_pid = await _build_player_lookups(session)
 
     for _, row in df.iterrows():
-        fg_id = str(row.get("fangraphs_id", ""))
-        player_id = fg_to_pid.get(fg_id)
+        player_id = _resolve_player_id(row, fg_to_pid, name_to_pid)
         if player_id is None:
             continue
 
@@ -140,6 +137,47 @@ async def load_pitching_seasons(session: AsyncSession, df: pd.DataFrame) -> int:
     await session.commit()
     logger.info(f"Loaded {count} pitching season rows")
     return count
+
+
+async def _build_player_lookups(
+    session: AsyncSession,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Build player lookup dicts: fangraphs_id->player_id and name->player_id."""
+    result = await session.execute(
+        select(Player.id, Player.fangraphs_id, Player.full_name)
+    )
+    fg_to_pid: dict[str, int] = {}
+    name_to_pid: dict[str, int] = {}
+    for row in result:
+        if row.fangraphs_id:
+            fg_to_pid[row.fangraphs_id] = row.id
+        if row.full_name:
+            # Normalize name for matching: lowercase, strip whitespace
+            name_to_pid[row.full_name.strip().lower()] = row.id
+    return fg_to_pid, name_to_pid
+
+
+def _resolve_player_id(
+    row: pd.Series,
+    fg_to_pid: dict[str, int],
+    name_to_pid: dict[str, int],
+) -> int | None:
+    """Resolve a player_id from a stats row, trying fangraphs_id first, then name."""
+    # Try fangraphs_id first
+    fg_id = row.get("fangraphs_id")
+    if pd.notna(fg_id) and str(fg_id) not in ("", "None", "nan", "<NA>"):
+        player_id = fg_to_pid.get(str(fg_id))
+        if player_id is not None:
+            return player_id
+
+    # Fallback to name-based matching
+    name = row.get("full_name")
+    if pd.notna(name) and str(name).strip():
+        player_id = name_to_pid.get(str(name).strip().lower())
+        if player_id is not None:
+            return player_id
+
+    return None
 
 
 async def load_statcast_aggregates(

@@ -1,12 +1,12 @@
-"""Fetches season-level batting and pitching stats from FanGraphs.
+"""Fetches season-level batting and pitching stats from multiple sources.
 
-Tries multiple FanGraphs API endpoints (they change periodically), then
-falls back to pybaseball as a last resort. The cleaning module downstream
-handles column name normalization, so we just need to deliver a DataFrame
-with recognizable FanGraphs column names.
+Tries multiple FanGraphs API endpoints first, then pybaseball FanGraphs
+functions, and finally falls back to Baseball Reference via pybaseball.
+The cleaning module downstream handles column name normalization.
 """
 
 import logging
+import time
 from typing import Any
 
 import pandas as pd
@@ -30,6 +30,61 @@ _HEADERS = {
     "Referer": "https://www.fangraphs.com/leaders/major-league",
 }
 
+# Baseball Reference batting columns -> FanGraphs-style column names
+# (so the cleaning module's BATTING_COLUMN_MAP can pick them up)
+_BBREF_BATTING_RENAME = {
+    "Name": "Name",
+    "Age": "Age",
+    "Tm": "Team",
+    "Year": "Season",
+    "PA": "PA",
+    "AB": "AB",
+    "H": "H",
+    "HR": "HR",
+    "RBI": "RBI",
+    "R": "R",
+    "SB": "SB",
+    "CS": "CS",
+    "BA": "AVG",
+    "OBP": "OBP",
+    "SLG": "SLG",
+    "OPS": "OPS",
+    "BB": "BB_count",
+    "SO": "SO_count",
+    "BB%": "BB%",
+    "SO%": "K%",
+    "GDP": "GDP",
+    "HBP": "HBP",
+    "2B": "2B",
+    "3B": "3B",
+    "WAR": "WAR",
+}
+
+# Baseball Reference pitching columns -> FanGraphs-style column names
+_BBREF_PITCHING_RENAME = {
+    "Name": "Name",
+    "Age": "Age",
+    "Tm": "Team",
+    "Year": "Season",
+    "W": "W",
+    "L": "L",
+    "SV": "SV",
+    "IP": "IP",
+    "GS": "GS",
+    "G": "G",
+    "SO": "SO",
+    "BB": "BB",
+    "H": "H",
+    "HR": "HR",
+    "ERA": "ERA",
+    "WHIP": "WHIP",
+    "SO/W": "SO_W",
+    "WAR": "WAR",
+    "SO9": "K/9",
+    "BB9": "BB/9",
+    "HR9": "HR/9",
+}
+
 
 def enable_cache() -> None:
     """Enable pybaseball cache (used for Chadwick register)."""
@@ -38,14 +93,17 @@ def enable_cache() -> None:
 
 
 def fetch_batting_stats(start_season: int, end_season: int, qual: int = 50) -> pd.DataFrame:
-    """Fetch FanGraphs batting stats for a range of seasons.
+    """Fetch batting stats for a range of seasons.
+
+    Tries FanGraphs API, then pybaseball FanGraphs functions, then
+    Baseball Reference as a final fallback.
 
     Returns:
         DataFrame with one row per player per season.
     """
     logger.info(f"Fetching batting stats {start_season}-{end_season} (qual={qual})")
 
-    # Try direct API with multiple URL patterns
+    # Try direct FanGraphs API with multiple URL patterns
     for url in _API_URLS:
         try:
             df = _fetch_from_api(url, "bat", start_season, end_season, qual)
@@ -54,7 +112,7 @@ def fetch_batting_stats(start_season: int, end_season: int, qual: int = 50) -> p
         except Exception as e:
             logger.warning(f"API {url} failed for batting: {e}")
 
-    # Fallback to pybaseball
+    # Fallback to pybaseball FanGraphs functions
     import pybaseball
     for fn_name, fn, kwargs in [
         ("fg_batting_data", pybaseball.fg_batting_data,
@@ -69,14 +127,26 @@ def fetch_batting_stats(start_season: int, end_season: int, qual: int = 50) -> p
         except Exception as e:
             logger.warning(f"pybaseball.{fn_name} failed: {e}")
 
+    # Final fallback: Baseball Reference
+    logger.info("All FanGraphs sources failed. Trying Baseball Reference...")
+    try:
+        df = _fetch_bbref_batting(start_season, end_season)
+        logger.info(f"Fetched {len(df)} batting rows via Baseball Reference")
+        return df
+    except Exception as e:
+        logger.warning(f"Baseball Reference batting failed: {e}")
+
     raise RuntimeError(
-        "All FanGraphs data sources failed. FanGraphs may be down or blocking requests. "
-        "Try again later or check https://www.fangraphs.com/leaders/major-league manually."
+        "All data sources failed (FanGraphs API, pybaseball, Baseball Reference). "
+        "Sites may be down or blocking requests. Try again later."
     )
 
 
 def fetch_pitching_stats(start_season: int, end_season: int, qual: int = 20) -> pd.DataFrame:
-    """Fetch FanGraphs pitching stats for a range of seasons.
+    """Fetch pitching stats for a range of seasons.
+
+    Tries FanGraphs API, then pybaseball FanGraphs functions, then
+    Baseball Reference as a final fallback.
 
     Returns:
         DataFrame with one row per player per season.
@@ -105,10 +175,117 @@ def fetch_pitching_stats(start_season: int, end_season: int, qual: int = 20) -> 
         except Exception as e:
             logger.warning(f"pybaseball.{fn_name} failed: {e}")
 
+    # Final fallback: Baseball Reference
+    logger.info("All FanGraphs sources failed. Trying Baseball Reference...")
+    try:
+        df = _fetch_bbref_pitching(start_season, end_season)
+        logger.info(f"Fetched {len(df)} pitching rows via Baseball Reference")
+        return df
+    except Exception as e:
+        logger.warning(f"Baseball Reference pitching failed: {e}")
+
     raise RuntimeError(
-        "All FanGraphs data sources failed. FanGraphs may be down or blocking requests. "
-        "Try again later or check https://www.fangraphs.com/leaders/major-league manually."
+        "All data sources failed (FanGraphs API, pybaseball, Baseball Reference). "
+        "Sites may be down or blocking requests. Try again later."
     )
+
+
+def _fetch_bbref_batting(start_season: int, end_season: int) -> pd.DataFrame:
+    """Fetch batting stats from Baseball Reference, one season at a time.
+
+    BBRef doesn't have advanced Statcast metrics (Barrel%, xwOBA, etc.),
+    but provides solid core stats. The cleaning module handles missing columns.
+    """
+    import pybaseball
+
+    frames = []
+    for year in range(start_season, end_season + 1):
+        logger.info(f"Fetching BBRef batting for {year}...")
+        try:
+            df = pybaseball.batting_stats_bref(year)
+            df["Year"] = year
+            frames.append(df)
+            # Be polite to Baseball Reference — small delay between requests
+            if year < end_season:
+                time.sleep(2)
+        except Exception as e:
+            logger.warning(f"BBRef batting {year} failed: {e}")
+            continue
+
+    if not frames:
+        raise RuntimeError("No batting data retrieved from Baseball Reference")
+
+    combined = pd.concat(frames, ignore_index=True)
+
+    # Rename BBRef columns to match FanGraphs-style names the cleaning module expects
+    actual_renames = {k: v for k, v in _BBREF_BATTING_RENAME.items() if k in combined.columns}
+    combined = combined.rename(columns=actual_renames)
+
+    # BBRef uses player name directly, and doesn't have a FanGraphs ID.
+    # We need to match via name. Add a placeholder IDfg so the pipeline
+    # can attempt name-based matching downstream.
+    if "IDfg" not in combined.columns:
+        combined["IDfg"] = None
+
+    # Compute ISO if not present: SLG - AVG
+    if "ISO" not in combined.columns and "SLG" in combined.columns and "AVG" in combined.columns:
+        combined["ISO"] = pd.to_numeric(combined["SLG"], errors="coerce") - pd.to_numeric(combined["AVG"], errors="coerce")
+
+    # Compute BABIP if we have the counting stats: (H - HR) / (AB - SO - HR + SF)
+    # BBRef may not always have SF, so skip if not available
+    if "BABIP" not in combined.columns:
+        try:
+            h = pd.to_numeric(combined.get("H"), errors="coerce")
+            hr = pd.to_numeric(combined.get("HR"), errors="coerce")
+            ab = pd.to_numeric(combined.get("AB"), errors="coerce")
+            so = pd.to_numeric(combined.get("SO_count"), errors="coerce")
+            denom = ab - so - hr
+            combined["BABIP"] = (h - hr) / denom.replace(0, pd.NA)
+        except Exception:
+            pass
+
+    logger.info(f"BBRef batting: {len(combined)} rows, columns: {list(combined.columns[:15])}...")
+    return combined
+
+
+def _fetch_bbref_pitching(start_season: int, end_season: int) -> pd.DataFrame:
+    """Fetch pitching stats from Baseball Reference, one season at a time."""
+    import pybaseball
+
+    frames = []
+    for year in range(start_season, end_season + 1):
+        logger.info(f"Fetching BBRef pitching for {year}...")
+        try:
+            df = pybaseball.pitching_stats_bref(year)
+            df["Year"] = year
+            frames.append(df)
+            if year < end_season:
+                time.sleep(2)
+        except Exception as e:
+            logger.warning(f"BBRef pitching {year} failed: {e}")
+            continue
+
+    if not frames:
+        raise RuntimeError("No pitching data retrieved from Baseball Reference")
+
+    combined = pd.concat(frames, ignore_index=True)
+
+    actual_renames = {k: v for k, v in _BBREF_PITCHING_RENAME.items() if k in combined.columns}
+    combined = combined.rename(columns=actual_renames)
+
+    if "IDfg" not in combined.columns:
+        combined["IDfg"] = None
+
+    # Compute K% and BB% from counting stats if not present
+    # BBRef provides SO and BB as counting stats, and sometimes batters faced (BF)
+    if "K%" not in combined.columns and "SO" in combined.columns:
+        bf = pd.to_numeric(combined.get("BF"), errors="coerce")
+        if bf is not None and bf.notna().any():
+            combined["K%"] = pd.to_numeric(combined["SO"], errors="coerce") / bf
+            combined["BB%"] = pd.to_numeric(combined.get("BB", 0), errors="coerce") / bf
+
+    logger.info(f"BBRef pitching: {len(combined)} rows, columns: {list(combined.columns[:15])}...")
+    return combined
 
 
 def _fetch_from_api(
@@ -118,20 +295,7 @@ def _fetch_from_api(
     end_season: int,
     qual: int,
 ) -> pd.DataFrame:
-    """Fetch data directly from a FanGraphs JSON API endpoint.
-
-    Args:
-        base_url: The API endpoint URL.
-        stats: 'bat' for batting, 'pit' for pitching.
-        start_season: First season.
-        end_season: Last season.
-        qual: Minimum PA (batting) or IP (pitching).
-
-    Returns:
-        DataFrame with FanGraphs column names.
-    """
-    # Use type=8 (dashboard) which is a simple, well-supported stat type
-    # that includes the core stats we need
+    """Fetch data directly from a FanGraphs JSON API endpoint."""
     params: dict[str, Any] = {
         "pos": "all",
         "stats": stats,
@@ -155,10 +319,8 @@ def _fetch_from_api(
     resp = requests.get(base_url, params=params, headers=_HEADERS, timeout=60)
     resp.raise_for_status()
 
-    # Check that response is actually JSON
     content_type = resp.headers.get("Content-Type", "")
     if "json" not in content_type and "javascript" not in content_type:
-        # Log first 200 chars of response for debugging
         preview = resp.text[:200].replace("\n", " ")
         raise ValueError(
             f"Expected JSON but got Content-Type: {content_type}. "
@@ -167,7 +329,6 @@ def _fetch_from_api(
 
     data = resp.json()
 
-    # The API may return {"data": [...]} or just a list
     if isinstance(data, dict) and "data" in data:
         rows = data["data"]
     elif isinstance(data, list):
@@ -179,8 +340,6 @@ def _fetch_from_api(
         raise ValueError("FanGraphs API returned no data")
 
     df = pd.DataFrame(rows)
-
-    # Normalize column names to match what our cleaning module expects
     df = _normalize_api_columns(df)
 
     logger.info(f"API returned {len(df)} rows with columns: {list(df.columns[:15])}...")
@@ -188,11 +347,7 @@ def _fetch_from_api(
 
 
 def _normalize_api_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize FanGraphs API JSON column names to match pybaseball conventions.
-
-    The FanGraphs API returns keys that mostly match our BATTING_COLUMN_MAP /
-    PITCHING_COLUMN_MAP already. The main difference is the player ID field.
-    """
+    """Normalize FanGraphs API JSON column names to match pybaseball conventions."""
     rename_map = {
         "playerid": "IDfg",
         "PlayerName": "Name",
