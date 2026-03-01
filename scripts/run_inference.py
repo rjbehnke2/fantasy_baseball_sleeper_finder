@@ -109,6 +109,15 @@ async def main():
     predictor = Predictor()
     predictor.load_models()
 
+    if not predictor.models:
+        logger.warning(
+            "⚠ No trained ML models found. Sleeper and Bust scores will all be 50.0 "
+            "(neutral default). To generate real predictions, train models first:\n"
+            "    python -m backend.ml.training.train_pipeline\n"
+            "Then re-run inference:\n"
+            "    python -m scripts.run_inference"
+        )
+
     scores = predictor.predict_all(
         batter_features=batter_features,
         pitcher_features=pitcher_features,
