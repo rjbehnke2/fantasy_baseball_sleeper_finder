@@ -65,7 +65,7 @@ This starts three containers:
 > docker compose up -d
 > ```
 
-### 3. Seed the database and generate projections
+### 3. Seed the database
 
 ```bash
 docker compose exec api python -m scripts.seed_database
@@ -79,13 +79,26 @@ This will:
 
 The seeding process takes several minutes. Data sources are tried in order: FanGraphs API, pybaseball FanGraphs scrapers, then Baseball Reference as a fallback.
 
-To re-run just the inference pipeline (e.g., after a data refresh):
+### 4. Train the ML models
+
+> **Important:** This step is required for meaningful Sleeper and Bust scores.
+> Without trained models, all players receive a default score of 50.0.
+
+```bash
+docker compose exec api python -m backend.ml.training.train_pipeline
+```
+
+Training requires at least 2 seasons of historical data in the database (loaded in step 3). It trains XGBoost + LightGBM ensembles for sleeper detection, bust detection, and regression prediction, then saves model artifacts to `backend/ml/artifacts/`.
+
+### 5. Re-run inference with trained models
 
 ```bash
 docker compose exec api python -m scripts.run_inference
 ```
 
-### 4. Open the app
+This regenerates all projections using the newly trained models. You only need to re-run this step after training — the seed script already runs inference once, but that first pass uses default scores since no models exist yet.
+
+### 6. Open the app
 
 - **Frontend:** [http://localhost:3000](http://localhost:3000)
 - **API docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
@@ -101,12 +114,14 @@ docker compose exec api python -m scripts.run_inference
 pip install -e ".[dev]"
 
 # Start PostgreSQL (must be running on localhost:5432)
-# Seed the database and run inference
+# Seed the database with historical stats
 python -m scripts.seed_database
 
-# Or run them separately:
-# python -m scripts.seed_database  # data only
-# python -m scripts.run_inference  # projections only
+# Train ML models (requires 2+ seasons of data from seed step)
+python -m backend.ml.training.train_pipeline
+
+# Re-run inference to generate predictions with trained models
+python -m scripts.run_inference
 
 # Start the API server
 uvicorn backend.app.main:app --reload --port 8000
@@ -296,6 +311,13 @@ To check API logs:
 ```bash
 docker compose logs api
 ```
+
+**All Sleeper/Bust scores are 50.0:** The ML models haven't been trained yet. Run the training pipeline, then re-run inference:
+```bash
+docker compose exec api python -m backend.ml.training.train_pipeline
+docker compose exec api python -m scripts.run_inference
+```
+Check the API logs (`docker compose logs api`) for warnings like "NO ML model artifacts found" to confirm this is the issue.
 
 **Port already in use:** If port 8000 is taken, edit `docker-compose.yml` and change `"8000:8000"` to `"8080:8000"` (or any free port).
 
