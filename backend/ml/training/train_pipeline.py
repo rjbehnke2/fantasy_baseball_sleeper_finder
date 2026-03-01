@@ -2,12 +2,18 @@
 
 Trains all ML models (sleeper, bust, regression) using historical data,
 runs cross-validation, and saves model artifacts.
+
+Usage:
+    python -m backend.ml.training.train_pipeline
 """
 
+import asyncio
 import logging
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
+from sqlalchemy import select
 
 from backend.data_pipeline.transformers.feature_engineering import (
     engineer_batting_features,
@@ -150,3 +156,112 @@ def train_all_models(
 
     logger.info(f"Training complete. Results: {results}")
     return results
+
+
+async def main():
+    """Load data from the database and train all models."""
+    from backend.app.db.base import Base
+    from backend.app.db.session import engine, async_session_factory
+    from backend.app.models import BattingSeason, PitchingSeason, Player
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    logger.info("=== Fantasy Baseball Sleeper Finder: Training Pipeline ===")
+
+    # Ensure tables exist
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    # Load season data from database
+    logger.info("Loading season data from database...")
+    async with async_session_factory() as session:
+        # Batting seasons
+        bat_cols = [c for c in BattingSeason.__table__.columns]
+        result = await session.execute(select(*bat_cols))
+        batting_df = pd.DataFrame(result.all(), columns=[c.name for c in bat_cols])
+
+        # Pitching seasons
+        pit_cols = [c for c in PitchingSeason.__table__.columns]
+        result = await session.execute(select(*pit_cols))
+        pitching_df = pd.DataFrame(result.all(), columns=[c.name for c in pit_cols])
+
+        # Players (for age estimation)
+        result = await session.execute(
+            select(Player.id, Player.birth_date)
+        )
+        players_rows = result.all()
+
+    logger.info(
+        f"Loaded {len(batting_df)} batting rows, {len(pitching_df)} pitching rows"
+    )
+
+    if batting_df.empty and pitching_df.empty:
+        logger.error("No season data found. Run seed_database.py first.")
+        return
+
+    # Estimate player ages
+    logger.info("Estimating player ages...")
+    today = date.today()
+    player_ages: dict[int, int] = {}
+
+    for pid, bd in players_rows:
+        if pd.notna(bd) and bd is not None:
+            try:
+                if isinstance(bd, str):
+                    bd = datetime.strptime(bd, "%Y-%m-%d").date()
+                player_ages[pid] = today.year - bd.year - (
+                    (today.month, today.day) < (bd.month, bd.day)
+                )
+            except (ValueError, TypeError):
+                pass
+
+    # Fallback for players without birth_date
+    all_player_ids = set()
+    if not batting_df.empty:
+        all_player_ids.update(batting_df["player_id"].unique())
+    if not pitching_df.empty:
+        all_player_ids.update(pitching_df["player_id"].unique())
+
+    for pid in all_player_ids:
+        if pid in player_ages:
+            continue
+        earliest = None
+        if not batting_df.empty:
+            s = batting_df.loc[batting_df["player_id"] == pid, "season"]
+            if len(s) > 0:
+                earliest = s.min()
+        if not pitching_df.empty:
+            s = pitching_df.loc[pitching_df["player_id"] == pid, "season"]
+            if len(s) > 0:
+                val = s.min()
+                if earliest is None or val < earliest:
+                    earliest = val
+        if earliest is not None:
+            player_ages[pid] = 24 + (today.year - int(earliest))
+        else:
+            player_ages[pid] = 28
+
+    logger.info(f"Estimated ages for {len(player_ages)} players")
+
+    # Train all models
+    results = train_all_models(batting_df, pitching_df, player_ages)
+
+    if results:
+        logger.info("=== Training Summary ===")
+        for model_name, cv_scores in results.items():
+            logger.info(f"  {model_name}: {cv_scores}")
+        logger.info(
+            f"Model artifacts saved to {ARTIFACTS_DIR}. "
+            "Re-run inference to use trained models: python -m scripts.run_inference"
+        )
+    else:
+        logger.error(
+            "No models were trained. Check that you have at least 2 seasons of data."
+        )
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
