@@ -9,7 +9,9 @@ RUN npm ci
 # Copy source
 COPY . .
 
-# Build
+# Build — pass API URL so Next.js rewrites compile with the correct destination
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN npm run build
 
 EXPOSE 3000
