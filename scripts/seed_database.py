@@ -81,6 +81,11 @@ async def main():
     logger.info(f"  Batting seasons: {bat_count}")
     logger.info(f"  Pitching seasons: {pit_count}")
 
+    # Step 4: Run inference pipeline to generate projections
+    logger.info("Step 4: Running inference pipeline...")
+    from scripts.run_inference import main as run_inference
+    await run_inference()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -55,7 +55,7 @@ This starts three containers:
 - **FastAPI backend** on port `8000`
 - **Next.js frontend** on port `3000`
 
-### 3. Seed the database
+### 3. Seed the database and generate projections
 
 ```bash
 docker compose exec api python -m scripts.seed_database
@@ -65,8 +65,15 @@ This will:
 1. Build a player ID mapping table from the Chadwick register (~25,000 players)
 2. Fetch batting stats (2015–present) from FanGraphs or Baseball Reference
 3. Fetch pitching stats (2015–present) from FanGraphs or Baseball Reference
+4. Run the ML inference pipeline to generate projections, rankings, and auction values
 
-The seeding process takes a few minutes. Data sources are tried in order: FanGraphs API, pybaseball FanGraphs scrapers, then Baseball Reference as a fallback.
+The seeding process takes several minutes. Data sources are tried in order: FanGraphs API, pybaseball FanGraphs scrapers, then Baseball Reference as a fallback.
+
+To re-run just the inference pipeline (e.g., after a data refresh):
+
+```bash
+docker compose exec api python -m scripts.run_inference
+```
 
 ### 4. Open the app
 
@@ -83,8 +90,12 @@ The seeding process takes a few minutes. Data sources are tried in order: FanGra
 pip install -e ".[dev]"
 
 # Start PostgreSQL (must be running on localhost:5432)
-# Then seed the database
+# Seed the database and run inference
 python -m scripts.seed_database
+
+# Or run them separately:
+# python -m scripts.seed_database  # data only
+# python -m scripts.run_inference  # projections only
 
 # Start the API server
 uvicorn backend.app.main:app --reload --port 8000
